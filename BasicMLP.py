@@ -1,62 +1,104 @@
-import pandas as pd
+import copy
+import random
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 
-from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score, roc_auc_score
+
+
+# ---------------------------
+# Reproducibility
+# ---------------------------
+def set_seed(seed: int = 1):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+set_seed(42)
+
+
+# ---------------------------
+# Config
+# ---------------------------
+DATA_PATH = "sp100_dataset.csv"
+TARGET_COL = "target_fwd_5d"
+
+BATCH_SIZE = 512
+MAX_EPOCHS = 100
+LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 1e-4
+PATIENCE = 12
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ---------------------------
 # 1) Load dataset
 # ---------------------------
-dataset = pd.read_csv("sp100_dataset.csv")
+dataset = pd.read_csv(DATA_PATH)
 dataset["date"] = pd.to_datetime(dataset["date"])
 
 feature_cols = [
     "ret_1d",
+    "ret_3d",
     "ret_5d",
-    "ret_20d",
-    "vol_20d",
-    "vol_ratio_20d",
-    "ma_gap_20d",
-    "high_low_range_1d",
     "ret_10d",
+    "ret_20d",
     "ret_60d",
     "vol_5d",
+    "vol_20d",
     "vol_60d",
+    "vol_ratio_20d",
     "ma_gap_5d",
+    "ma_gap_10d",
+    "ma_gap_20d",
     "ma_gap_60d",
-    "volume_z_20d",
-    "range_5d_avg",
+    "high_low_range",
+    "close_open_ratio",
+    "high_open_ratio",
+    "low_open_ratio",
+    "close_high_ratio",
+    "close_low_ratio",
+    "market_ret_1d",
+    "market_ret_5d",
+    "market_ret_20d",
+    "market_vol_20d",
+    "market_ma_gap_20d",
+    "market_breakout_20d",
+    "breakout_20d",
+    "ret_1d_vs_sector",
+    "ret_5d_vs_sector",
+    "ret_20d_vs_sector",
+    "vol_20d_vs_sector",
+    "breakout_20d_vs_sector",
+    "volume_z_20d_vs_sector",
 ]
 
-target_col = "target_up_5d"
+# keep only rows with full data
+dataset = dataset.dropna(subset=feature_cols + [TARGET_COL]).copy()
 
+# Time split
 train_df = dataset[dataset["date"] < "2023-01-01"].copy()
 val_df = dataset[(dataset["date"] >= "2023-01-01") & (dataset["date"] < "2024-01-01")].copy()
 test_df = dataset[dataset["date"] >= "2024-01-01"].copy()
 
-X_train = train_df[feature_cols].values
-X_val = val_df[feature_cols].values
-X_test = test_df[feature_cols].values
+X_train = train_df[feature_cols].values.astype(np.float32)
+X_val = val_df[feature_cols].values.astype(np.float32)
+X_test = test_df[feature_cols].values.astype(np.float32)
 
-y_train = train_df[target_col].values.astype(np.float32)
-y_val = val_df[target_col].values.astype(np.float32)
-y_test = test_df[target_col].values.astype(np.float32)
+y_train = train_df[TARGET_COL].values.astype(np.float32)
+y_val = val_df[TARGET_COL].values.astype(np.float32)
+y_test = test_df[TARGET_COL].values.astype(np.float32)
 
-
-# ---------------------------
-# 2) Scale inputs using train only
-# ---------------------------
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_val = scaler.transform(X_val)
-X_test = scaler.transform(X_test)
+print(f"Train shape: {X_train.shape}")
+print(f"Val shape:   {X_val.shape}")
+print(f"Test shape:  {X_test.shape}")
 
 
 # ---------------------------
-# 3) Convert to torch tensors
+# 2) Torch tensors / loaders
 # ---------------------------
 X_train_t = torch.tensor(X_train, dtype=torch.float32)
 X_val_t = torch.tensor(X_val, dtype=torch.float32)
@@ -66,74 +108,142 @@ y_train_t = torch.tensor(y_train, dtype=torch.float32).view(-1, 1)
 y_val_t = torch.tensor(y_val, dtype=torch.float32).view(-1, 1)
 y_test_t = torch.tensor(y_test, dtype=torch.float32).view(-1, 1)
 
+train_ds = TensorDataset(X_train_t, y_train_t)
+val_ds = TensorDataset(X_val_t, y_val_t)
+test_ds = TensorDataset(X_test_t, y_test_t)
+
+train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=False)
+val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
+test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
+
 
 # ---------------------------
-# 4) Define MLP
+# 3) Smaller MLP
 # ---------------------------
 class StockMLP(nn.Module):
-    def __init__(self, input_dim: int):
+    def __init__(self, input_dim: int, dropout: float = 0.10):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 16),
+            nn.Linear(input_dim, 64),
             nn.ReLU(),
-            nn.Linear(16, 8),
+            nn.Dropout(dropout),
+
+            nn.Linear(64, 16),
             nn.ReLU(),
-            nn.Linear(8, 1),
+
+            nn.Linear(16, 1),
+
         )
 
     def forward(self, x):
         return self.net(x)
 
 
-model = StockMLP(input_dim=len(feature_cols))
-
-criterion = nn.BCEWithLogitsLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+model = StockMLP(input_dim=len(feature_cols), dropout=0.1).to(DEVICE)
 
 
 # ---------------------------
-# 5) Train
+# 4) Loss / optimizer
 # ---------------------------
-epochs = 30
 
-for epoch in range(epochs):
-    model.train()
+criterion = nn.MSELoss()
+optimizer = torch.optim.Adam(
+    model.parameters(),
+    lr=LEARNING_RATE,
+    weight_decay=WEIGHT_DECAY,
+)
 
-    logits = model(X_train_t)
-    loss = criterion(logits, y_train_t)
 
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
+# ---------------------------
+# 5) Helper functions
+# ---------------------------
+def run_epoch(model, loader, criterion, optimizer=None):
+    is_train = optimizer is not None
+    model.train() if is_train else model.eval()
 
-    model.eval()
-    with torch.no_grad():
-        val_logits = model(X_val_t)
-        val_loss = criterion(val_logits, y_val_t)
+    total_loss = 0.0
+    all_preds = []
+    all_targets = []
 
-    if epoch % 5 == 0 or epoch == epochs - 1:
+    for xb, yb in loader:
+        xb = xb.to(DEVICE)
+        yb = yb.to(DEVICE)
+
+        if is_train:
+            optimizer.zero_grad()
+
+        with torch.set_grad_enabled(is_train):
+            preds = model(xb)              # shape: [batch, 1]
+            loss = criterion(preds, yb)
+
+            if is_train:
+                loss.backward()
+                optimizer.step()
+
+        total_loss += loss.item() * xb.size(0)
+        all_preds.append(preds.detach().cpu())
+        all_targets.append(yb.detach().cpu())
+
+    avg_loss = total_loss / len(loader.dataset)
+
+    all_preds = torch.cat(all_preds).squeeze().numpy()
+    all_targets = torch.cat(all_targets).squeeze().numpy()
+
+    # correlation is a better metric than accuracy for regression
+    if len(all_preds) > 1 and np.std(all_preds) > 0 and np.std(all_targets) > 0:
+        corr = np.corrcoef(all_preds, all_targets)[0, 1]
+    else:
+        corr = np.nan
+
+    return avg_loss, corr, all_preds, all_targets
+
+
+
+# ---------------------------
+# 6) Train with early stopping
+# ---------------------------
+best_state = None
+best_val_corr = -np.inf
+best_epoch = -1
+patience_counter = 0
+
+for epoch in range(1, MAX_EPOCHS + 1):
+    train_loss, train_corr, _, _ = run_epoch(model, train_loader, criterion, optimizer)
+    val_loss, val_corr, val_preds, val_targets = run_epoch(model, val_loader, criterion, optimizer=None)
+
+    improved = val_corr > best_val_corr
+    if improved:
+        best_val_corr = val_corr
+        best_epoch = epoch
+        best_state = copy.deepcopy(model.state_dict())
+        patience_counter = 0
+    else:
+        patience_counter += 1
+
+    if epoch == 1 or epoch % 5 == 0:
         print(
-            f"Epoch {epoch:02d} | "
-            f"Train Loss: {loss.item():.4f} | "
-            f"Val Loss: {val_loss.item():.4f}"
+            f"Epoch {epoch:03d} | "
+            f"Train Loss: {train_loss:.6f} | Train Corr: {train_corr:.4f} | "
+            f"Val Loss: {val_loss:.6f} | Val Corr: {val_corr:.4f}"
         )
 
+    if patience_counter >= PATIENCE:
+        print(
+            f"Early stopping at epoch {epoch}. "
+            f"Best epoch was {best_epoch} with Val Corr {best_val_corr:.4f}"
+        )
+        break
+
+if best_state is not None:
+    model.load_state_dict(best_state)
 
 # ---------------------------
-# 6) Evaluate
+# 7) Final evaluation
 # ---------------------------
-model.eval()
-with torch.no_grad():
-    val_logits = model(X_val_t).squeeze().numpy()
-    test_logits = model(X_test_t).squeeze().numpy()
+val_loss, val_corr, val_preds, val_targets = run_epoch(model, val_loader, criterion, optimizer=None)
+test_loss, test_corr, test_preds, test_targets = run_epoch(model, test_loader, criterion, optimizer=None)
 
-val_probs = 1 / (1 + np.exp(-val_logits))
-test_probs = 1 / (1 + np.exp(-test_logits))
-
-val_preds = (val_probs >= 0.5).astype(int)
-test_preds = (test_probs >= 0.5).astype(int)
-
-print("Validation Accuracy:", accuracy_score(y_val, val_preds))
-print("Validation AUC:", roc_auc_score(y_val, val_probs))
-print("Test Accuracy:", accuracy_score(y_test, test_preds))
-print("Test AUC:", roc_auc_score(y_test, test_probs))
+print(f"Final Validation Loss: {val_loss:.6f}")
+print(f"Final Validation Corr: {val_corr:.4f}")
+print(f"Final Test Loss: {test_loss:.6f}")
+print(f"Final Test Corr: {test_corr:.4f}")

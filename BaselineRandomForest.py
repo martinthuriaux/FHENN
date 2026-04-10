@@ -7,21 +7,24 @@ dataset["date"] = pd.to_datetime(dataset["date"])
 
 feature_cols = [
     "ret_1d",
+    "ret_3d",
     "ret_5d",
-    "ret_20d",
-    "vol_20d",
-    "vol_ratio_20d",
-    "ma_gap_20d",
-    "high_low_range_1d",
-    # "market_ret_5d",
     "ret_10d",
+    "ret_20d",
     "ret_60d",
     "vol_5d",
+    "vol_20d",
     "vol_60d",
+    "vol_ratio_20d",
     "ma_gap_5d",
+    "ma_gap_10d",
+    "ma_gap_20d",
     "ma_gap_60d",
+    "high_low_range_1d",
+    "market_ret_5d",
     "volume_z_20d",
     "range_5d_avg",
+    "ret_1d_rank",
 ]
 
 target_col = "target_up_5d"
