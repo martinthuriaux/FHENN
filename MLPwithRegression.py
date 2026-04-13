@@ -197,7 +197,57 @@ def run_epoch(model, loader, criterion, optimizer=None):
 
     return avg_loss, corr, all_preds, all_targets
 
+def top_k_return(df, preds, target_col, k=0.2):
+    """
+    Select the top k% of stocks per date using predicted scores,
+    then compute their average ACTUAL forward return.
 
+    df: dataframe containing at least ['date', target_col]
+    preds: numpy array of model predictions, same row order as df
+    target_col: actual forward return column, e.g. 'target_fwd_5d'
+    k: fraction to select, e.g. 0.2 = top 20%
+    """
+    eval_df = df[["date", target_col]].copy()
+    eval_df["pred"] = preds
+
+    daily_returns = []
+
+    for _, group in eval_df.groupby("date"):
+        group = group.sort_values("pred", ascending=False)
+        top_n = max(1, int(len(group) * k))
+        top_group = group.head(top_n)
+        daily_returns.append(top_group[target_col].mean())
+
+    return float(np.mean(daily_returns))
+
+
+def bottom_k_return(df, preds, target_col, k=0.2):
+    """
+    Select the bottom k% of stocks per date using predicted scores,
+    then compute their average ACTUAL forward return.
+    """
+    eval_df = df[["date", target_col]].copy()
+    eval_df["pred"] = preds
+
+    daily_returns = []
+
+    for _, group in eval_df.groupby("date"):
+        group = group.sort_values("pred", ascending=False)
+        bottom_n = max(1, int(len(group) * k))
+        bottom_group = group.tail(bottom_n)
+        daily_returns.append(bottom_group[target_col].mean())
+
+    return float(np.mean(daily_returns))
+
+
+def top_bottom_spread(df, preds, target_col, k=0.2):
+    """
+    Difference between top-k return and bottom-k return.
+    A larger positive spread is better.
+    """
+    top_ret = top_k_return(df, preds, target_col, k=k)
+    bottom_ret = bottom_k_return(df, preds, target_col, k=k)
+    return top_ret - bottom_ret
 
 # ---------------------------
 # 6) Train with early stopping
@@ -240,6 +290,9 @@ if best_state is not None:
 # ---------------------------
 # 7) Final evaluation
 # ---------------------------
+# ---------------------------
+# 7) Final evaluation
+# ---------------------------
 val_loss, val_corr, val_preds, val_targets = run_epoch(model, val_loader, criterion, optimizer=None)
 test_loss, test_corr, test_preds, test_targets = run_epoch(model, test_loader, criterion, optimizer=None)
 
@@ -247,3 +300,28 @@ print(f"Final Validation Loss: {val_loss:.6f}")
 print(f"Final Validation Corr: {val_corr:.4f}")
 print(f"Final Test Loss: {test_loss:.6f}")
 print(f"Final Test Corr: {test_corr:.4f}")
+
+# Top-k / Bottom-k portfolio-style metrics
+val_top_10 = top_k_return(val_df, val_preds, TARGET_COL, k=0.10)
+val_top_20 = top_k_return(val_df, val_preds, TARGET_COL, k=0.20)
+val_bottom_10 = bottom_k_return(val_df, val_preds, TARGET_COL, k=0.10)
+val_bottom_20 = bottom_k_return(val_df, val_preds, TARGET_COL, k=0.20)
+
+test_top_10 = top_k_return(test_df, test_preds, TARGET_COL, k=0.10)
+test_top_20 = top_k_return(test_df, test_preds, TARGET_COL, k=0.20)
+test_bottom_10 = bottom_k_return(test_df, test_preds, TARGET_COL, k=0.10)
+test_bottom_20 = bottom_k_return(test_df, test_preds, TARGET_COL, k=0.20)
+
+print(f"Val Top 10% Avg Return: {val_top_10:.6f}")
+print(f"Val Top 20% Avg Return: {val_top_20:.6f}")
+print(f"Val Bottom 10% Avg Return: {val_bottom_10:.6f}")
+print(f"Val Bottom 20% Avg Return: {val_bottom_20:.6f}")
+print(f"Val Top-Bottom Spread 10%: {(val_top_10 - val_bottom_10):.6f}")
+print(f"Val Top-Bottom Spread 20%: {(val_top_20 - val_bottom_20):.6f}")
+
+print(f"Test Top 10% Avg Return: {test_top_10:.6f}")
+print(f"Test Top 20% Avg Return: {test_top_20:.6f}")
+print(f"Test Bottom 10% Avg Return: {test_bottom_10:.6f}")
+print(f"Test Bottom 20% Avg Return: {test_bottom_20:.6f}")
+print(f"Test Top-Bottom Spread 10%: {(test_top_10 - test_bottom_10):.6f}")
+print(f"Test Top-Bottom Spread 20%: {(test_top_20 - test_bottom_20):.6f}")

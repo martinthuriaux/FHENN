@@ -232,6 +232,28 @@ def top_k_return_from_arrays(dates, scores, targets, k=0.2):
 
     return float(np.mean(daily_returns))
 
+def bottom_k_return_from_arrays(dates, scores, targets, k=0.2):
+    eval_df = pd.DataFrame({
+        "date": dates,
+        "score": scores,
+        "target": targets,
+    })
+
+    daily_returns = []
+
+    for _, group in eval_df.groupby("date"):
+        group = group.sort_values("score", ascending=False)
+        bottom_n = max(1, int(len(group) * k))
+        bottom_group = group.tail(bottom_n)
+        daily_returns.append(bottom_group["target"].mean())
+
+    return float(np.mean(daily_returns))
+
+
+def top_bottom_spread_from_arrays(dates, scores, targets, k=0.2):
+    top_ret = top_k_return_from_arrays(dates, scores, targets, k=k)
+    bottom_ret = bottom_k_return_from_arrays(dates, scores, targets, k=k)
+    return top_ret - bottom_ret
 
 def sign_accuracy(scores, targets):
     pred_sign = (scores > 0).astype(int)
@@ -319,6 +341,9 @@ if best_state is not None:
 # ---------------------------
 # 7) Final evaluation
 # ---------------------------
+# ---------------------------
+# 7) Final evaluation
+# ---------------------------
 val_loss, val_corr, val_scores, val_targets, val_dates = run_ranking_epoch(
     model, val_groups, optimizer=None, min_gap=0.0
 )
@@ -340,7 +365,27 @@ print("Test Sign AUC:", sign_auc(test_scores, test_targets))
 print("Val Pairwise Accuracy:", pairwise_accuracy(val_dates, val_scores, val_targets))
 print("Test Pairwise Accuracy:", pairwise_accuracy(test_dates, test_scores, test_targets))
 
-print("Val Top 10% Avg Return:", top_k_return_from_arrays(val_dates, val_scores, val_targets, k=0.10))
-print("Val Top 20% Avg Return:", top_k_return_from_arrays(val_dates, val_scores, val_targets, k=0.20))
-print("Test Top 10% Avg Return:", top_k_return_from_arrays(test_dates, test_scores, test_targets, k=0.10))
-print("Test Top 20% Avg Return:", top_k_return_from_arrays(test_dates, test_scores, test_targets, k=0.20))
+# Top / Bottom bucket returns
+val_top_10 = top_k_return_from_arrays(val_dates, val_scores, val_targets, k=0.10)
+val_top_20 = top_k_return_from_arrays(val_dates, val_scores, val_targets, k=0.20)
+val_bottom_10 = bottom_k_return_from_arrays(val_dates, val_scores, val_targets, k=0.10)
+val_bottom_20 = bottom_k_return_from_arrays(val_dates, val_scores, val_targets, k=0.20)
+
+test_top_10 = top_k_return_from_arrays(test_dates, test_scores, test_targets, k=0.10)
+test_top_20 = top_k_return_from_arrays(test_dates, test_scores, test_targets, k=0.20)
+test_bottom_10 = bottom_k_return_from_arrays(test_dates, test_scores, test_targets, k=0.10)
+test_bottom_20 = bottom_k_return_from_arrays(test_dates, test_scores, test_targets, k=0.20)
+
+print(f"Val Top 10% Avg Return: {val_top_10:.6f}")
+print(f"Val Top 20% Avg Return: {val_top_20:.6f}")
+print(f"Val Bottom 10% Avg Return: {val_bottom_10:.6f}")
+print(f"Val Bottom 20% Avg Return: {val_bottom_20:.6f}")
+print(f"Val Top-Bottom Spread 10%: {(val_top_10 - val_bottom_10):.6f}")
+print(f"Val Top-Bottom Spread 20%: {(val_top_20 - val_bottom_20):.6f}")
+
+print(f"Test Top 10% Avg Return: {test_top_10:.6f}")
+print(f"Test Top 20% Avg Return: {test_top_20:.6f}")
+print(f"Test Bottom 10% Avg Return: {test_bottom_10:.6f}")
+print(f"Test Bottom 20% Avg Return: {test_bottom_20:.6f}")
+print(f"Test Top-Bottom Spread 10%: {(test_top_10 - test_bottom_10):.6f}")
+print(f"Test Top-Bottom Spread 20%: {(test_top_20 - test_bottom_20):.6f}")
